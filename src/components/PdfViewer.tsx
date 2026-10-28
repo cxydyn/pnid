@@ -126,6 +126,12 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   // Page dimensions in CSS pixels
   const [pageDimensions, setPageDimensions] = useState({ width: 800, height: 600 });
 
+  // Reset page and pan when switching documents
+  useEffect(() => {
+    setCurrentPage(1);
+    setPanOffset({ x: 0, y: 0 });
+  }, [documentItem.id]);
+
   // Load PDF Document
   useEffect(() => {
     let isCancelled = false;
@@ -166,8 +172,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         const loadedDoc = await currentLoadingTask.promise;
         if (isCancelled) return;
         pdfDocRef.current = loadedDoc;
-        setPdfDoc(loadedDoc);
         setTotalPages(loadedDoc.numPages);
+        setCurrentPage((p) => Math.max(1, Math.min(p, loadedDoc.numPages)));
+        setPdfDoc(loadedDoc);
       } catch (err: any) {
         if (!isCancelled && err?.name !== 'RenderingCancelledException') {
           console.error('Error loading PDF document:', err);
@@ -206,7 +213,15 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         } catch {}
       }
 
-      const page = await docToRender.getPage(currentPage);
+      // Safeguard against invalid page request when page number exceeds document total
+      const total = docToRender.numPages || 1;
+      const targetPageNum = Math.max(1, Math.min(currentPage, total));
+      if (targetPageNum !== currentPage) {
+        setCurrentPage(targetPageNum);
+        return;
+      }
+
+      const page = await docToRender.getPage(targetPageNum);
       const viewport = page.getViewport({ scale: scale, rotation: rotation });
 
       const canvas = canvasRef.current;
