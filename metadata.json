@@ -1,0 +1,6 @@
+{
+  "name": "Smart P&ID Viewer & RCA Investigation Dashboard",
+  "description": "Offline-capable P&ID engineering viewer, equipment hotspot linking, and Root Cause Analysis (5-Whys, Fishbone, Fault Tree) investigation platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
