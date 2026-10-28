@@ -27,7 +27,8 @@ import {
 } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
-import { getDocumentBinary } from '../utils/db';
+import { getDocumentBinary, saveDocumentBinary } from '../utils/db';
+import { generateSamplePidPdf } from '../utils/sampleData';
 
 // Ensure worker is configured
 if (typeof window !== 'undefined') {
@@ -119,6 +120,8 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
   const pdfDocRef = useRef<any>(null);
+  const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [isLoadingPdf, setIsLoadingPdf] = useState(false);
 
   // Page dimensions in CSS pixels
   const [pageDimensions, setPageDimensions] = useState({ width: 800, height: 600 });
@@ -129,16 +132,22 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     let currentLoadingTask: any = null;
 
     async function loadPdf() {
-      if (!pdfData) return;
-
+      setIsLoadingPdf(true);
       try {
         let validBuffer = pdfData;
-        if (validBuffer.byteLength === 0) {
-          const fresh = await getDocumentBinary(documentItem.id);
-          if (fresh && fresh.byteLength > 0) {
-            validBuffer = fresh;
-            onUpdatePdfData(fresh, documentItem.pageCount);
+
+        // If buffer is null or detached, automatically fetch from storage or generate
+        if (!validBuffer || validBuffer.byteLength === 0) {
+          validBuffer = await getDocumentBinary(documentItem.id);
+          if ((!validBuffer || validBuffer.byteLength === 0) && documentItem.isSample) {
+            const sampleBytes = await generateSamplePidPdf(documentItem.id);
+            await saveDocumentBinary(documentItem.id, sampleBytes);
+            validBuffer = await getDocumentBinary(documentItem.id);
+          }
+          if (validBuffer && validBuffer.byteLength > 0) {
+            onUpdatePdfData(validBuffer, documentItem.pageCount);
           } else {
+            setIsLoadingPdf(false);
             return;
           }
         }
@@ -148,16 +157,25 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         const bufferCopy = validBuffer.slice(0);
         const dataCopy = new Uint8Array(bufferCopy);
 
-        currentLoadingTask = pLib.getDocument({ data: dataCopy });
+        currentLoadingTask = pLib.getDocument({
+          data: dataCopy,
+          cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
+          cMapPacked: true,
+        });
+
         const loadedDoc = await currentLoadingTask.promise;
         if (isCancelled) return;
         pdfDocRef.current = loadedDoc;
+        setPdfDoc(loadedDoc);
         setTotalPages(loadedDoc.numPages);
-        setCurrentPage(1);
       } catch (err: any) {
         if (!isCancelled && err?.name !== 'RenderingCancelledException') {
           console.error('Error loading PDF document:', err);
           onShowToast('error', 'Failed to load PDF', 'The document data could not be parsed.');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingPdf(false);
         }
       }
     }
@@ -178,14 +196,17 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
 
   // Render Current Page onto High-DPI Canvas
   const renderCurrentPage = useCallback(async () => {
-    if (!pdfDocRef.current || !canvasRef.current) return;
+    const docToRender = pdfDoc || pdfDocRef.current;
+    if (!docToRender || !canvasRef.current) return;
 
     try {
       if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
+        try {
+          renderTaskRef.current.cancel();
+        } catch {}
       }
 
-      const page = await pdfDocRef.current.getPage(currentPage);
+      const page = await docToRender.getPage(currentPage);
       const viewport = page.getViewport({ scale: scale, rotation: rotation });
 
       const canvas = canvasRef.current;
@@ -204,6 +225,10 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
       ctx.save();
       ctx.scale(dpr, dpr);
 
+      // Pre-fill white canvas background for crisp engineering paper
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+
       const renderContext = {
         canvasContext: ctx,
         viewport: viewport,
@@ -218,11 +243,13 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         console.error('Page render error:', err);
       }
     }
-  }, [currentPage, scale, rotation]);
+  }, [pdfDoc, currentPage, scale, rotation]);
 
   useEffect(() => {
-    renderCurrentPage();
-  }, [renderCurrentPage]);
+    if (pdfDoc) {
+      renderCurrentPage();
+    }
+  }, [pdfDoc, renderCurrentPage]);
 
   // Filter hotspots and annotations for current page and doc
   const pageHotspots = hotspots.filter(
@@ -860,7 +887,17 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           }}
         >
           {/* Main High-DPI PDF Render Canvas */}
-          <canvas ref={canvasRef} className="block w-full h-full bg-slate-900 shadow-2xl" />
+          <canvas ref={canvasRef} className="block w-full h-full bg-white shadow-2xl" />
+
+          {/* Loading Indicator */}
+          {isLoadingPdf && (
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex flex-col items-center justify-center gap-2.5 z-20 pointer-events-none">
+              <div className="w-8 h-8 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs font-mono text-cyan-300 font-semibold">
+                Rendering P&ID schematic...
+              </span>
+            </div>
+          )}
 
           {/* HOTSPOT OVERLAY BOXES */}
           {pageHotspots.map((hs) => {
