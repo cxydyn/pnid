@@ -29,6 +29,7 @@ import { PdfViewer } from './components/PdfViewer';
 import { RcaDashboard } from './components/RcaDashboard';
 import { PrintReportView } from './components/PrintReportView';
 import { DataSyncModal } from './components/DataSyncModal';
+import { GoogleDriveModal } from './components/GoogleDriveModal';
 import { ToastContainer } from './components/ToastContainer';
 import {
   Layers,
@@ -39,7 +40,8 @@ import {
   FolderTree,
   Eye,
   Sliders,
-  Printer
+  Printer,
+  Cloud
 } from 'lucide-react';
 
 const STORAGE_KEY_DOCS = 'pid_studio_docs_v1';
@@ -104,6 +106,7 @@ export default function App() {
 
   // Modals & Feedback
   const [isDataSyncOpen, setIsDataSyncOpen] = useState(false);
+  const [isGoogleDriveOpen, setIsGoogleDriveOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   // Toast Dispatcher
@@ -359,6 +362,24 @@ export default function App() {
     }
   };
 
+  // Import Document from Google Drive
+  const handleImportDocumentFromDrive = async (doc: DocumentItem, buffer: ArrayBuffer) => {
+    await saveDocumentBinary(doc.id, buffer);
+    setDocuments((prev) => {
+      const existingIdx = prev.findIndex((d) => d.id === doc.id);
+      if (existingIdx >= 0) {
+        const updated = [...prev];
+        updated[existingIdx] = doc;
+        return updated;
+      }
+      return [doc, ...prev];
+    });
+    setActiveDocId(doc.id);
+    setActivePdfBuffer(buffer.slice(0));
+    setCurrentView('viewer');
+    showToast('success', 'Document Loaded', `Opened ${doc.name} from Google Drive.`);
+  };
+
   // Find active records
   const activeDocument = documents.find((d) => d.id === activeDocId) || documents[0];
   const activeRca = rcaInvestigations.find((r) => r.id === activeRcaId) || rcaInvestigations[0];
@@ -417,10 +438,19 @@ export default function App() {
         </nav>
 
         {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            onClick={() => setIsGoogleDriveOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:text-white bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-700/60 rounded-lg transition-colors whitespace-nowrap shrink-0 shadow-sm"
+            title="Google Drive Cloud Workspace"
+          >
+            <Cloud className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Google Drive</span>
+          </button>
+
           <button
             onClick={() => setIsDataSyncOpen(true)}
-            className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 hover:text-white rounded-lg border border-slate-700 transition-colors whitespace-nowrap shrink-0"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 hover:text-white rounded-lg border border-slate-700 transition-colors whitespace-nowrap shrink-0"
           >
             <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
             <span>Project Sync</span>
@@ -438,6 +468,19 @@ export default function App() {
             onSelectFolder={setCurrentFolderId}
             onOpenDocument={handleOpenDocument}
             onUploadPdf={handleUploadPdf}
+            onFolderUploadCompleted={(newFolders, newDocs) => {
+              if (newFolders.length > 0) {
+                setFolders((prev) => [...prev, ...newFolders]);
+              }
+              if (newDocs.length > 0) {
+                setDocuments((prev) => [...newDocs, ...prev]);
+                showToast(
+                  'success',
+                  'Folder Upload Complete',
+                  `Imported ${newDocs.length} drawing(s)${newFolders.length > 0 ? ` into ${newFolders.length} folder(s)` : ''}.`
+                );
+              }
+            }}
             onCreateFolder={handleCreateFolder}
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
@@ -446,6 +489,7 @@ export default function App() {
             onMoveDocument={handleMoveDocument}
             onDownloadDocument={handleDownloadDocument}
             onOpenDataSync={() => setIsDataSyncOpen(true)}
+            onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
           />
         )}
 
@@ -507,6 +551,22 @@ export default function App() {
           }}
           onBulkUpdateDocuments={(updatedDocs) => setDocuments(updatedDocs)}
           onClose={() => setIsDataSyncOpen(false)}
+          onShowToast={showToast}
+        />
+      )}
+
+      {/* GOOGLE DRIVE CLOUD WORKSPACE MODAL */}
+      {isGoogleDriveOpen && (
+        <GoogleDriveModal
+          documents={documents}
+          folders={folders}
+          hotspots={hotspots}
+          annotations={annotations}
+          rcaInvestigations={rcaInvestigations}
+          activeDocument={activeDocument}
+          activePdfBuffer={activePdfBuffer}
+          onImportDocumentFromDrive={handleImportDocumentFromDrive}
+          onClose={() => setIsGoogleDriveOpen(false)}
           onShowToast={showToast}
         />
       )}

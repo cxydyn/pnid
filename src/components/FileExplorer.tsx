@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { DocumentItem, FolderItem } from '../types';
+import { scanEntry, processFolderUpload, UploadedFileEntry } from '../utils/folderUpload';
 import {
   Folder,
   FolderPlus,
@@ -19,7 +20,9 @@ import {
   RefreshCw,
   FolderOpen,
   ArrowRight,
-  Plus
+  Plus,
+  FolderUp,
+  Cloud
 } from 'lucide-react';
 
 interface FileExplorerProps {
@@ -29,6 +32,7 @@ interface FileExplorerProps {
   onSelectFolder: (folderId: string) => void;
   onOpenDocument: (docId: string) => void;
   onUploadPdf: (files: FileList | File[]) => void;
+  onFolderUploadCompleted: (newFolders: FolderItem[], newDocs: DocumentItem[]) => void;
   onCreateFolder: (name: string, parentId: string | null) => void;
   onRenameFolder: (folderId: string, newName: string) => void;
   onDeleteFolder: (folderId: string) => void;
@@ -37,6 +41,7 @@ interface FileExplorerProps {
   onMoveDocument: (docId: string, targetFolderId: string) => void;
   onDownloadDocument: (docId: string) => void;
   onOpenDataSync: () => void;
+  onOpenGoogleDrive: () => void;
 }
 
 interface ContextMenuState {
@@ -54,6 +59,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   onSelectFolder,
   onOpenDocument,
   onUploadPdf,
+  onFolderUploadCompleted,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
@@ -62,6 +68,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   onMoveDocument,
   onDownloadDocument,
   onOpenDataSync,
+  onOpenGoogleDrive,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [treeSearch, setTreeSearch] = useState('');
@@ -74,6 +81,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   const [draggedDocId, setDraggedDocId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [isDraggingFilesOver, setIsDraggingFilesOver] = useState(false);
+  const [isProcessingUpload, setIsProcessingUpload] = useState(false);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
@@ -93,6 +101,38 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle folder upload input change
+  const handleFolderInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    setIsProcessingUpload(true);
+    try {
+      const files = Array.from(e.target.files);
+      const entries: UploadedFileEntry[] = files.map((file) => ({
+        file,
+        relativePath: (file as any).webkitRelativePath || file.name,
+      }));
+
+      const createdFolders: FolderItem[] = [];
+      const createdDocs: DocumentItem[] = [];
+
+      await processFolderUpload(
+        entries,
+        currentFolderId,
+        folders,
+        (newF) => createdFolders.push(...newF),
+        (newD) => createdDocs.push(...newD)
+      );
+
+      onFolderUploadCompleted(createdFolders, createdDocs);
+    } catch (err) {
+      console.error('Folder upload processing error:', err);
+    } finally {
+      setIsProcessingUpload(false);
+      e.target.value = '';
+    }
+  };
 
   // Toggle tree expansion
   const toggleFolderExpand = (folderId: string, e?: React.MouseEvent) => {
@@ -179,8 +219,8 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
     return () => window.removeEventListener('click', handleClose);
   }, [contextMenu.visible]);
 
-  // Handle external file drop (upload)
-  const handleExplorerDrop = (e: React.DragEvent) => {
+  // Handle external file or folder drop (upload)
+  const handleExplorerDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingFilesOver(false);
 
@@ -192,7 +232,43 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
       return;
     }
 
-    // External file upload
+    // Check if items support webkitGetAsEntry (for dropped folders)
+    const items = e.dataTransfer.items;
+    if (items && items.length > 0 && typeof (items[0] as any).webkitGetAsEntry === 'function') {
+      setIsProcessingUpload(true);
+      try {
+        const entries: UploadedFileEntry[] = [];
+        for (let i = 0; i < items.length; i++) {
+          const entry = (items[i] as any).webkitGetAsEntry();
+          if (entry) {
+            const scanned = await scanEntry(entry);
+            entries.push(...scanned);
+          }
+        }
+
+        if (entries.length > 0) {
+          const createdFolders: FolderItem[] = [];
+          const createdDocs: DocumentItem[] = [];
+
+          await processFolderUpload(
+            entries,
+            currentFolderId,
+            folders,
+            (newF) => createdFolders.push(...newF),
+            (newD) => createdDocs.push(...newD)
+          );
+
+          onFolderUploadCompleted(createdFolders, createdDocs);
+          return;
+        }
+      } catch (err) {
+        console.error('Drop folder scan error:', err);
+      } finally {
+        setIsProcessingUpload(false);
+      }
+    }
+
+    // External file upload fallback
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       onUploadPdf(e.dataTransfer.files);
     }
@@ -275,7 +351,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
   return (
     <div className="flex h-full w-full bg-slate-950 overflow-hidden text-slate-200">
-      {/* Hidden File Input for uploading */}
+      {/* Hidden File Input for uploading individual PDFs */}
       <input
         type="file"
         ref={fileInputRef}
@@ -288,6 +364,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
             e.target.value = '';
           }
         }}
+      />
+
+      {/* Hidden Folder Input for uploading entire directory trees */}
+      <input
+        type="file"
+        ref={folderInputRef}
+        {...({ webkitdirectory: '', directory: '' } as any)}
+        multiple
+        className="hidden"
+        onChange={handleFolderInputChange}
       />
 
       {/* LEFT SIDEBAR: Windows Explorer Tree View */}
@@ -337,17 +423,27 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
         </div>
 
         {/* Storage Info / Sync Footer */}
-        <div className="p-3.5 border-t border-slate-800/80 bg-slate-900/80 flex items-center justify-between text-xs">
-          <div className="text-slate-400 flex items-center gap-2">
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            <span>{documents.length} Drawings Cached</span>
+        <div className="p-3.5 border-t border-slate-800/80 bg-slate-900/80 flex flex-col gap-2 text-xs">
+          <div className="flex items-center justify-between text-slate-400">
+            <div className="flex items-center gap-2">
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{documents.length} Drawings Cached</span>
+            </div>
+            <button
+              onClick={onOpenDataSync}
+              className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 font-medium transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Sync</span>
+            </button>
           </div>
+
           <button
-            onClick={onOpenDataSync}
-            className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 font-medium transition-colors"
+            onClick={onOpenGoogleDrive}
+            className="w-full flex items-center justify-center gap-2 py-1.5 px-2 bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 rounded-lg text-cyan-300 font-semibold transition-colors"
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>Data Sync</span>
+            <Cloud className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Google Drive Storage</span>
           </button>
         </div>
       </aside>
@@ -425,22 +521,53 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               </button>
             </div>
 
+            {/* Upload Folder Button */}
+            <button
+              onClick={() => folderInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white text-xs font-semibold rounded-lg border border-slate-700 transition-all"
+              title="Upload an entire folder hierarchy of PDF drawings"
+            >
+              <FolderUp className="w-3.5 h-3.5 text-amber-400" />
+              <span>Upload Folder</span>
+            </button>
+
             {/* Upload PDF Button */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-2 px-3.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold rounded-lg shadow-sm transition-all"
+              title="Upload individual PDF drawings"
             >
               <Upload className="w-3.5 h-3.5" />
               <span>Upload PDF</span>
+            </button>
+
+            {/* Google Drive Workspace Button */}
+            <button
+              onClick={onOpenGoogleDrive}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-700/60 text-cyan-300 hover:text-white text-xs font-bold rounded-lg shadow-sm transition-all"
+              title="Open Google Drive Cloud Workspace"
+            >
+              <Cloud className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Google Drive</span>
             </button>
           </div>
         </div>
 
         {/* Drag-over indicator overlay */}
         {isDraggingFilesOver && (
-          <div className="absolute inset-0 bg-cyan-950/80 border-2 border-dashed border-cyan-400 z-40 flex flex-col items-center justify-center gap-3 backdrop-blur-sm pointer-events-none">
+          <div className="absolute inset-0 bg-cyan-950/85 border-2 border-dashed border-cyan-400 z-40 flex flex-col items-center justify-center gap-3 backdrop-blur-sm pointer-events-none">
             <Upload className="w-12 h-12 text-cyan-400 animate-bounce" />
-            <p className="text-sm font-semibold text-white">Drop PDF schematics here to upload</p>
+            <p className="text-sm font-semibold text-white">Drop PDF schematics or folders here to import</p>
+            <p className="text-xs text-cyan-300">Folder structures will be automatically mapped to virtual directories</p>
+          </div>
+        )}
+
+        {/* Processing folder / files upload spinner */}
+        {isProcessingUpload && (
+          <div className="absolute inset-0 bg-slate-950/80 z-40 flex flex-col items-center justify-center gap-3 backdrop-blur-xs">
+            <div className="w-8 h-8 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm font-semibold text-white">Processing folder hierarchy & indexing PDF drawings...</p>
+            <p className="text-xs text-slate-400">Saving binaries to high-speed offline storage</p>
           </div>
         )}
 
@@ -794,6 +921,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               </button>
               <button
                 onClick={() => {
+                  folderInputRef.current?.click();
+                  setContextMenu((prev) => ({ ...prev, visible: false }));
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-800 transition-colors"
+              >
+                <FolderUp className="w-3.5 h-3.5 text-amber-400" />
+                <span>Upload Folder Here</span>
+              </button>
+              <button
+                onClick={() => {
                   setPromptModal({
                     visible: true,
                     title: 'Create Virtual Folder',
@@ -809,6 +946,17 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
               >
                 <FolderPlus className="w-3.5 h-3.5 text-amber-400" />
                 <span>New Folder</span>
+              </button>
+              <div className="h-px bg-slate-800 my-1" />
+              <button
+                onClick={() => {
+                  onOpenGoogleDrive();
+                  setContextMenu((prev) => ({ ...prev, visible: false }));
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-cyan-300 hover:bg-cyan-950/60 transition-colors"
+              >
+                <Cloud className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Open Google Drive</span>
               </button>
             </>
           )}
