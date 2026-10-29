@@ -9,6 +9,9 @@ import {
   uploadFileToGoogleDrive,
   createGoogleDriveFolder,
   deleteGoogleDriveFile,
+  enableDemoDriveMode,
+  setManualAccessToken,
+  getIsDemoDriveMode,
   DriveFileItem,
 } from '../utils/googleAuth';
 import { DocumentItem, FolderItem, Hotspot, Annotation, RCAInvestigation } from '../types';
@@ -28,7 +31,10 @@ import {
   FolderPlus,
   ExternalLink,
   ChevronRight,
-  HardDrive
+  HardDrive,
+  Key,
+  ShieldAlert,
+  Sparkles
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { getAllDocumentBinaries, getAllAttachmentBinaries } from '../utils/db';
@@ -63,6 +69,9 @@ export const GoogleDriveModal: React.FC<GoogleDriveModalProps> = ({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [isOperating, setIsOperating] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [manualTokenInput, setManualTokenInput] = useState('');
+  const [showManualTokenInput, setShowManualTokenInput] = useState(false);
 
   const [driveFiles, setDriveFiles] = useState<DriveFileItem[]>([]);
   const [currentDriveFolderId, setCurrentDriveFolderId] = useState<string | undefined>(undefined);
@@ -89,6 +98,7 @@ export const GoogleDriveModal: React.FC<GoogleDriveModalProps> = ({
 
   const handleSignIn = async () => {
     setIsAuthenticating(true);
+    setAuthNotice(null);
     try {
       const res = await googleSignIn();
       if (res) {
@@ -98,11 +108,43 @@ export const GoogleDriveModal: React.FC<GoogleDriveModalProps> = ({
         await loadFiles(currentDriveFolderId);
       }
     } catch (err: any) {
-      console.error('Google Sign In error:', err);
-      onShowToast('error', 'Authentication Failed', err?.message || 'Could not connect to Google Drive.');
+      const code = err?.code || '';
+      const msg = err?.message || '';
+      if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        setAuthNotice(
+          `Domain preview saat ini (${window.location.hostname}) belum terdaftar di Firebase Authorized Domains. Anda dapat menggunakan Demo Cloud Drive simulasi yang sudah siap uji, memasukkan Access Token secara manual, atau menggunakan Project Sync (ZIP Offline).`
+        );
+      } else if (code === 'auth/popup-closed-by-user') {
+        onShowToast('info', 'Sign In Dibatalkan', 'Jendela login ditutup.');
+      } else {
+        onShowToast('warning', 'Kendala Autentikasi', msg || 'Tidak dapat terhubung ke Google Drive.');
+      }
     } finally {
       setIsAuthenticating(false);
     }
+  };
+
+  const handleStartDemoMode = async () => {
+    const demo = enableDemoDriveMode();
+    setCurrentUser(demo.user);
+    setToken(demo.accessToken);
+    setAuthNotice(null);
+    onShowToast('success', 'Demo Cloud Drive Aktif', 'Mode simulasi cloud aktif. Anda dapat menguji upload, backup, dan download!');
+    await loadFiles(currentDriveFolderId);
+  };
+
+  const handleApplyManualToken = async () => {
+    if (!manualTokenInput.trim()) return;
+    const injectedToken = setManualAccessToken(manualTokenInput.trim());
+    setCurrentUser({
+      displayName: 'Authenticated User (Token)',
+      email: 'user@google-oauth.api',
+    } as any);
+    setToken(injectedToken);
+    setAuthNotice(null);
+    setShowManualTokenInput(false);
+    onShowToast('success', 'Access Token Diterapkan', 'Mencoba memuat file Google Drive...');
+    await loadFiles(currentDriveFolderId);
   };
 
   const handleSignOut = async () => {
@@ -110,6 +152,7 @@ export const GoogleDriveModal: React.FC<GoogleDriveModalProps> = ({
     setCurrentUser(null);
     setToken(null);
     setDriveFiles([]);
+    setAuthNotice(null);
     onShowToast('info', 'Disconnected', 'Signed out from Google Drive.');
   };
 
@@ -320,40 +363,118 @@ export const GoogleDriveModal: React.FC<GoogleDriveModalProps> = ({
         <div className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
           {/* Sign In State / Banner */}
           {!token ? (
-            <div className="p-8 text-center flex flex-col items-center justify-center gap-4 bg-slate-950/80 rounded-2xl border border-slate-800">
+            <div className="p-8 text-center flex flex-col items-center justify-center gap-5 bg-slate-950/80 rounded-2xl border border-slate-800">
               <Cloud className="w-12 h-12 text-cyan-400" />
               <div className="max-w-md">
-                <h3 className="text-sm font-bold text-white mb-1">Connect Your Google Drive</h3>
+                <h3 className="text-sm font-bold text-white mb-1">Hubungkan Google Drive Cloud Workspace</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Sign in with your Google account to access, upload, and synchronize engineering drawings and
-                  investigation records without storing data only locally.
+                  Akses, unggah, dan sinkronisasi gambar teknik P&ID serta laporan investigasi RCA langsung dengan Google Drive.
                 </p>
               </div>
 
-              {/* Official Google Sign In Material Button Style */}
-              <button
-                onClick={handleSignIn}
-                disabled={isAuthenticating}
-                className="mt-2 flex items-center gap-3 px-5 py-2.5 bg-white hover:bg-slate-100 text-slate-800 font-semibold rounded-xl shadow-lg transition-all border border-slate-300 disabled:opacity-50"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 48 48">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-                </svg>
-                <span>{isAuthenticating ? 'Connecting...' : 'Sign in with Google'}</span>
-              </button>
+              {/* Notice when auth/unauthorized-domain occurs */}
+              {authNotice && (
+                <div className="w-full max-w-lg bg-amber-950/40 border border-amber-600/60 rounded-xl p-4 text-left space-y-2.5 animate-in fade-in">
+                  <div className="flex items-start gap-2.5">
+                    <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-amber-300 text-xs">
+                        Domain Preview Belum Terdaftar di Firebase
+                      </div>
+                      <p className="text-[11px] text-amber-200/80 mt-1 leading-relaxed">
+                        Peramban berjalan di URL Cloud Run: <code className="bg-slate-900 px-1 py-0.5 rounded text-amber-300">{window.location.hostname}</code>. Firebase Auth memerlukan domain ini ditambahkan ke Authorized Domains untuk popup login langsung.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-amber-800/40 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleStartDemoMode}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition-colors shadow"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Aktifkan Demo Cloud Drive (Siap Uji)</span>
+                    </button>
+                    <button
+                      onClick={() => setShowManualTokenInput((v) => !v)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition-colors border border-slate-700"
+                    >
+                      <Key className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Input Access Token Manual</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Manual Token Input Box */}
+              {showManualTokenInput && (
+                <div className="w-full max-w-lg bg-slate-900 border border-cyan-800/60 rounded-xl p-3 text-left space-y-2 animate-in fade-in">
+                  <label className="block text-[11px] font-bold text-cyan-400">
+                    Masukkan Google OAuth Bearer Token:
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      placeholder="ya29.a0AfH6SM..."
+                      value={manualTokenInput}
+                      onChange={(e) => setManualTokenInput(e.target.value)}
+                      className="flex-1 px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      onClick={handleApplyManualToken}
+                      className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg text-xs transition-colors"
+                    >
+                      Terapkan
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Primary Action Buttons */}
+              <div className="flex flex-col sm:flex-row items-center gap-3">
+                {/* Official Google Sign In Material Button Style */}
+                <button
+                  onClick={handleSignIn}
+                  disabled={isAuthenticating}
+                  className="flex items-center gap-3 px-5 py-2.5 bg-white hover:bg-slate-100 text-slate-800 font-semibold rounded-xl shadow-lg transition-all border border-slate-300 disabled:opacity-50"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 48 48">
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+                  </svg>
+                  <span>{isAuthenticating ? 'Menghubungkan...' : 'Sign in with Google'}</span>
+                </button>
+
+                {/* Instant Demo Drive Button */}
+                {!authNotice && (
+                  <button
+                    onClick={handleStartDemoMode}
+                    className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold rounded-xl border border-slate-700 shadow transition-colors"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span>Demo Cloud Drive</span>
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
               {/* Authenticated User Banner & Quick Actions */}
               <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                  <span className="font-medium text-slate-300">
-                    Connected to Google Drive {currentUser?.email ? `(${currentUser.email})` : ''}
-                  </span>
+                  <div className={`w-2.5 h-2.5 rounded-full ${getIsDemoDriveMode() ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-slate-300">
+                      Terhubung: {currentUser?.displayName || currentUser?.email || 'Google Drive'}
+                    </span>
+                    {getIsDemoDriveMode() && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-950 border border-amber-600/80 text-amber-300">
+                        SIMULATED DEMO
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2">

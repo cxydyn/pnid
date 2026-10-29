@@ -70,6 +70,8 @@ export interface DocumentItem {
   equipmentTag?: string;
   systemUnit?: string;
   isSample?: boolean;
+  isPlotPlan?: boolean;
+  rotation?: number;
 }
 
 export interface FolderItem {

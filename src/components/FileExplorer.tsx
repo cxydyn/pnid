@@ -22,7 +22,8 @@ import {
   ArrowRight,
   Plus,
   FolderUp,
-  Cloud
+  Cloud,
+  Star
 } from 'lucide-react';
 
 interface FileExplorerProps {
@@ -40,6 +41,7 @@ interface FileExplorerProps {
   onDeleteDocument: (docId: string) => void;
   onMoveDocument: (docId: string, targetFolderId: string) => void;
   onDownloadDocument: (docId: string) => void;
+  onTogglePlotPlan?: (docId: string) => void;
   onOpenDataSync: () => void;
   onOpenGoogleDrive: () => void;
 }
@@ -67,6 +69,7 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   onDeleteDocument,
   onMoveDocument,
   onDownloadDocument,
+  onTogglePlotPlan,
   onOpenDataSync,
   onOpenGoogleDrive,
 }) => {
@@ -654,8 +657,16 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                     <div>
                       {/* Card Header with Icon and Tag */}
                       <div className="flex items-start justify-between gap-2 mb-3">
-                        <div className="p-2.5 rounded-lg bg-cyan-950/60 border border-cyan-800/40 text-cyan-400 group-hover:bg-cyan-500 group-hover:text-slate-950 transition-colors">
-                          <FileText className="w-6 h-6" />
+                        <div className="flex items-center gap-2">
+                          <div className="p-2.5 rounded-lg bg-cyan-950/60 border border-cyan-800/40 text-cyan-400 group-hover:bg-cyan-500 group-hover:text-slate-950 transition-colors">
+                            <FileText className="w-6 h-6" />
+                          </div>
+                          {doc.isPlotPlan && (
+                            <span className="flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-950/80 border border-amber-600/70 px-2 py-0.5 rounded shadow-sm">
+                              <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                              <span>PLOTPLAN</span>
+                            </span>
+                          )}
                         </div>
                         {doc.equipmentTag && (
                           <span className="text-[11px] font-mono text-cyan-400 bg-cyan-950/70 border border-cyan-800/50 px-2 py-0.5 rounded">
@@ -828,6 +839,22 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
                 <Download className="w-3.5 h-3.5" />
                 <span>Download PDF</span>
               </button>
+              {onTogglePlotPlan && (
+                <button
+                  onClick={() => {
+                    onTogglePlotPlan(contextMenu.targetId!);
+                    setContextMenu((prev) => ({ ...prev, visible: false }));
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-amber-300 hover:bg-amber-950/60 hover:text-amber-200 transition-colors font-medium"
+                >
+                  <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                  <span>
+                    {documents.find((d) => d.id === contextMenu.targetId)?.isPlotPlan
+                      ? 'Hapus Status Plotplan'
+                      : 'Jadikan Plotplan Utama'}
+                  </span>
+                </button>
+              )}
               <div className="h-px bg-slate-800 my-1" />
               <button
                 onClick={() => {

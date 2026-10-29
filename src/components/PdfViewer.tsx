@@ -23,7 +23,15 @@ import {
   X,
   ExternalLink,
   Check,
-  MousePointer
+  MousePointer,
+  Copy,
+  Plus,
+  Download,
+  FilePlus,
+  GitBranch,
+  CornerUpLeft,
+  CornerUpRight,
+  Settings
 } from 'lucide-react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -52,6 +60,11 @@ interface PdfViewerProps {
   onSaveAnnotations: (updatedAnnotations: Annotation[]) => void;
   onUpdatePdfData: (newPdfData: ArrayBuffer, newPageCount: number) => void;
   onShowToast: (type: 'success' | 'error' | 'info' | 'warning', title: string, message?: string) => void;
+  onDownloadPdf?: () => void;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onGoBack?: () => void;
+  onGoForward?: () => void;
 }
 
 type ToolMode = 'select' | 'pan' | 'magnifier' | 'hotspot' | 'pen' | 'highlighter' | 'text' | 'eraser';
@@ -69,6 +82,11 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   onSaveAnnotations,
   onUpdatePdfData,
   onShowToast,
+  onDownloadPdf,
+  canGoBack = false,
+  canGoForward = false,
+  onGoBack,
+  onGoForward,
 }) => {
   // Navigation & Viewport State
   const [currentPage, setCurrentPage] = useState(1);
@@ -89,7 +107,16 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     visible: false,
   });
 
-  // Hotspot Drawing State
+  // Hotspot Drawing & Selection State
+  const [selectedHotspotId, setSelectedHotspotId] = useState<string | null>(null);
+  const [copiedHotspot, setCopiedHotspot] = useState<Hotspot | null>(() => {
+    try {
+      const saved = localStorage.getItem('smart_pid_copied_hotspot');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [isDrawingHotspot, setIsDrawingHotspot] = useState(false);
   const [hotspotStart, setHotspotStart] = useState<{ x: number; y: number } | null>(null);
   const [currentHotspotRect, setCurrentHotspotRect] = useState<{ x: number; y: number; w: number; h: number } | null>(
@@ -105,6 +132,10 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     anchorX: number;
     anchorY: number;
   } | null>(null);
+
+  // Canvas Right-Click Context Menu State
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const insertFileInputRef = useRef<HTMLInputElement>(null);
 
   // Annotation Drawing State
   const [isDrawingAnnotation, setIsDrawingAnnotation] = useState(false);
@@ -628,6 +659,61 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     }
   };
 
+  // Hotspot Clipboard Copy & Paste
+  const handleCopyHotspot = (hs: Hotspot) => {
+    setCopiedHotspot(hs);
+    localStorage.setItem('smart_pid_copied_hotspot', JSON.stringify(hs));
+    onShowToast('info', 'Hotspot Copied', `${hs.label} (${hs.equipmentTag}) copied to clipboard (Ctrl+V to paste)`);
+  };
+
+  const handlePasteHotspot = () => {
+    let source = copiedHotspot;
+    if (!source) {
+      try {
+        const saved = localStorage.getItem('smart_pid_copied_hotspot');
+        if (saved) source = JSON.parse(saved);
+      } catch {}
+    }
+    if (!source) {
+      onShowToast('warning', 'Clipboard Empty', 'No hotspot copied yet. Select a hotspot and click Copy.');
+      return;
+    }
+    const newHs: Hotspot = {
+      ...source,
+      id: `hs-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      docId: documentItem.id,
+      pageNum: currentPage,
+      x: Math.min(85, source.x + 3),
+      y: Math.min(85, source.y + 3),
+    };
+    onSaveHotspots([...hotspots, newHs]);
+    setSelectedHotspotId(newHs.id);
+    onShowToast('success', 'Hotspot Pasted', `Pasted ${newHs.label} on Page ${currentPage}`);
+  };
+
+  // Keyboard shortcut listener for Copy, Paste, Delete
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) return;
+      const key = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && key === 'c' && selectedHotspotId) {
+        const hs = hotspots.find((h) => h.id === selectedHotspotId);
+        if (hs) {
+          e.preventDefault();
+          handleCopyHotspot(hs);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && key === 'v') {
+        e.preventDefault();
+        handlePasteHotspot();
+      } else if ((key === 'delete' || key === 'backspace') && selectedHotspotId) {
+        e.preventDefault();
+        handleDeleteHotspot(selectedHotspotId);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedHotspotId, hotspots, copiedHotspot, documentItem.id, currentPage]);
+
   // Save Hotspot configuration from modal
   const handleSaveHotspotConfig = (hs: Hotspot) => {
     const existingIndex = hotspots.findIndex((h) => h.id === hs.id);
@@ -647,9 +733,56 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   const handleDeleteHotspot = (id: string) => {
     const updated = hotspots.filter((h) => h.id !== id);
     onSaveHotspots(updated);
+    if (selectedHotspotId === id) setSelectedHotspotId(null);
     setEditingHotspot(null);
     setActivePopupHotspot(null);
     onShowToast('info', 'Hotspot deleted');
+  };
+
+  // PDF Page Management: Insert new PDF pages after current page
+  const handleInsertPage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !pdfData) return;
+    try {
+      const originalPdf = await PDFDocument.load(pdfData);
+      const insertBuffer = await file.arrayBuffer();
+      const insertPdf = await PDFDocument.load(insertBuffer);
+      const copiedPages = await originalPdf.copyPages(insertPdf, insertPdf.getPageIndices());
+
+      const insertIndex = currentPage; // insert immediately after currentPage
+      copiedPages.forEach((page, idx) => originalPdf.insertPage(insertIndex + idx, page));
+
+      const newBytes = await originalPdf.save();
+      const numInserted = copiedPages.length;
+      const newPageCount = totalPages + numInserted;
+      const arrayBuffer = newBytes.buffer.slice(newBytes.byteOffset, newBytes.byteOffset + newBytes.byteLength) as ArrayBuffer;
+
+      // Shift subsequent hotspots and annotations
+      const updatedHotspots = hotspots.map((h) => {
+        if (h.docId === documentItem.id && h.pageNum > currentPage) {
+          return { ...h, pageNum: h.pageNum + numInserted };
+        }
+        return h;
+      });
+      onSaveHotspots(updatedHotspots);
+
+      const updatedAnnotations = annotations.map((a) => {
+        if (a.docId === documentItem.id && a.pageNum > currentPage) {
+          return { ...a, pageNum: a.pageNum + numInserted };
+        }
+        return a;
+      });
+      onSaveAnnotations(updatedAnnotations);
+
+      onUpdatePdfData(arrayBuffer, newPageCount);
+      setTotalPages(newPageCount);
+      onShowToast('success', 'Page(s) Inserted', `Inserted ${numInserted} page(s) after Page ${currentPage}.`);
+    } catch (err) {
+      console.error('Insert page error:', err);
+      onShowToast('error', 'Insert Failed', 'Failed to insert PDF page.');
+    } finally {
+      e.target.value = '';
+    }
   };
 
   // PDF Page Management using pdf-lib: Delete current page
@@ -665,6 +798,27 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
       const newBytes = await pdfDoc.save();
       const newPageCount = totalPages - 1;
       const arrayBuffer = newBytes.buffer.slice(newBytes.byteOffset, newBytes.byteOffset + newBytes.byteLength) as ArrayBuffer;
+
+      // Re-map hotspots: remove from current page, shift subsequent pages down by 1
+      const updatedHotspots = hotspots
+        .filter((h) => !(h.docId === documentItem.id && h.pageNum === currentPage))
+        .map((h) => {
+          if (h.docId === documentItem.id && h.pageNum > currentPage) {
+            return { ...h, pageNum: h.pageNum - 1 };
+          }
+          return h;
+        });
+      onSaveHotspots(updatedHotspots);
+
+      const updatedAnnotations = annotations
+        .filter((a) => !(a.docId === documentItem.id && a.pageNum === currentPage))
+        .map((a) => {
+          if (a.docId === documentItem.id && a.pageNum > currentPage) {
+            return { ...a, pageNum: a.pageNum - 1 };
+          }
+          return a;
+        });
+      onSaveAnnotations(updatedAnnotations);
 
       onUpdatePdfData(arrayBuffer, newPageCount);
       setCurrentPage((p) => Math.min(p, newPageCount));
@@ -700,15 +854,38 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
       {/* TOP HEADER: Viewer Controls & Toolbar */}
       <header className="h-14 shrink-0 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between gap-3 z-30">
         {/* Left: Back & Document Meta */}
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
           <button
             onClick={onBackToExplorer}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium transition-colors shrink-0"
           >
             <ArrowLeft className="w-4 h-4" />
             <span className="hidden sm:inline">Explorer</span>
           </button>
-          <div className="h-4 w-px bg-slate-800" />
+
+          {/* Navigation History (Mundur / Maju) */}
+          {(onGoBack || onGoForward) && (
+            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 shrink-0">
+              <button
+                onClick={onGoBack}
+                disabled={!canGoBack}
+                className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none rounded transition-colors"
+                title="Mundur ke P&ID sebelumnya (History Back)"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={onGoForward}
+                disabled={!canGoForward}
+                className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:pointer-events-none rounded transition-colors"
+                title="Maju ke P&ID berikutnya (History Forward)"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          <div className="h-4 w-px bg-slate-800 shrink-0" />
           <div className="min-w-0">
             <h2 className="text-xs font-semibold text-white truncate max-w-xs md:max-w-md">
               {documentItem.title || documentItem.name}
@@ -759,6 +936,22 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
             <span className="text-[11px] hidden md:inline font-medium">Add Hotspot</span>
           </button>
 
+          {/* Hotspot Paste Tool */}
+          {activeTool === 'hotspot' && (
+            <button
+              onClick={handlePasteHotspot}
+              className={`p-1.5 rounded-lg text-xs flex items-center gap-1 transition-colors ${
+                copiedHotspot
+                  ? 'bg-amber-950/80 text-amber-300 border border-amber-600/70 hover:bg-amber-900'
+                  : 'text-slate-600 hover:text-slate-400'
+              }`}
+              title="Paste Hotspot (Ctrl+V)"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span className="text-[11px] hidden lg:inline font-medium">Paste</span>
+            </button>
+          )}
+
           <div className="h-3.5 w-px bg-slate-800 mx-0.5" />
 
           {/* Annotation Pen */}
@@ -808,7 +1001,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
 
         {/* Right: Zoom, Page Navigation & PDF Page Mods */}
         <div className="flex items-center gap-2">
-          {/* Page Stepper */}
+          {/* Page Stepper & Insertion */}
           <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5">
             <button
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
@@ -829,6 +1022,22 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
             >
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
+
+            {/* Insert Page Button */}
+            <button
+              onClick={() => insertFileInputRef.current?.click()}
+              className="p-1 text-slate-400 hover:text-emerald-400 rounded transition-colors ml-0.5 border-l border-slate-800 pl-1.5"
+              title="Sisipkan Halaman PDF Baru setelah halaman ini"
+            >
+              <FilePlus className="w-3.5 h-3.5" />
+            </button>
+            <input
+              type="file"
+              ref={insertFileInputRef}
+              accept=".pdf"
+              className="hidden"
+              onChange={handleInsertPage}
+            />
           </div>
 
           {/* Zoom Buttons */}
@@ -859,19 +1068,30 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
             </button>
           </div>
 
-          {/* Page Modification: Rotate & Delete */}
+          {/* Page Modification: Rotate, Download & Delete */}
           <div className="flex items-center gap-1 border-l border-slate-800 pl-2">
             <button
               onClick={() => setRotation((r) => (r + 90) % 360)}
-              className="p-1.5 text-slate-400 hover:text-white bg-slate-800/80 rounded-lg"
+              className="p-1.5 text-slate-400 hover:text-white bg-slate-800/80 rounded-lg transition-colors"
               title="Rotate View 90°"
             >
               <RotateCw className="w-3.5 h-3.5" />
             </button>
+
+            {onDownloadPdf && (
+              <button
+                onClick={onDownloadPdf}
+                className="p-1.5 text-slate-400 hover:text-emerald-400 bg-slate-800/80 rounded-lg transition-colors"
+                title="Unduh fisik file PDF ini"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            )}
+
             <button
               onClick={handleDeletePage}
-              className="p-1.5 text-slate-400 hover:text-rose-400 bg-slate-800/80 rounded-lg"
-              title="Delete Current Page (pdf-lib)"
+              className="p-1.5 text-slate-400 hover:text-rose-400 bg-slate-800/80 rounded-lg transition-colors"
+              title="Hapus Halaman Ini (Delete Page)"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -883,7 +1103,17 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
       <div
         ref={containerRef}
         onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
+        onMouseDown={(e) => {
+          if (contextMenuPos) setContextMenuPos(null);
+          if (e.target === containerRef.current || e.target === canvasRef.current) {
+            setSelectedHotspotId(null);
+          }
+          handleMouseDown(e);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setContextMenuPos({ x: e.clientX, y: e.clientY });
+        }}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         className={`relative flex-1 overflow-hidden bg-slate-950 flex items-center justify-center ${
@@ -916,6 +1146,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
 
           {/* HOTSPOT OVERLAY BOXES */}
           {pageHotspots.map((hs) => {
+            const isSelected = selectedHotspotId === hs.id;
             let bgClass = 'bg-cyan-500/20 border-cyan-400 hover:bg-cyan-500/35 text-cyan-300';
             let iconBadge = 'L';
             if (hs.actionType === 'rca') {
@@ -932,13 +1163,19 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
             return (
               <div
                 key={hs.id}
-                onClick={(e) => handleHotspotClick(e, hs)}
+                onClick={(e) => {
+                  setSelectedHotspotId(hs.id);
+                  handleHotspotClick(e, hs);
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  setSelectedHotspotId(hs.id);
                   setEditingHotspot(hs);
                 }}
-                className={`absolute border-2 rounded cursor-pointer transition-all flex flex-col justify-between p-1 group ${bgClass}`}
+                className={`absolute border-2 rounded cursor-pointer transition-all flex flex-col justify-between p-1 group ${
+                  isSelected ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-slate-950 z-30' : 'z-20'
+                } ${bgClass}`}
                 style={{
                   left: `${hs.x}%`,
                   top: `${hs.y}%`,
@@ -946,6 +1183,53 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                   height: `${hs.height}%`,
                 }}
               >
+                {/* Floating Quick Action Toolbelt when selected */}
+                {isSelected && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute -top-11 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-900/95 border border-slate-700 shadow-2xl p-1 rounded-lg z-50 text-white whitespace-nowrap backdrop-blur-sm"
+                  >
+                    {hs.actionType === 'rca' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onOpenRca(hs.rcaId || 'rca-101', hs.equipmentTag, hs.label)}
+                          className="px-1.5 py-1 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors text-[10px] flex items-center gap-1 font-bold text-rose-300"
+                          title="Open RCA Investigation (Incident / 5-Whys / Fishbone / FTA)"
+                        >
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>RCA</span>
+                        </button>
+                        <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEditingHotspot(hs)}
+                      className="p-1 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Edit Link Configuration"
+                    >
+                      <Settings className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyHotspot(hs)}
+                      className="p-1 hover:text-amber-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Copy Link Area (Ctrl+C)"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteHotspot(hs.id)}
+                      className="p-1 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Delete Hotspot (Del)"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 {/* Hotspot Header Badge */}
                 <div className="flex items-center justify-between gap-1 pointer-events-none">
                   <span className="text-[9px] font-mono font-bold px-1 py-0.2 rounded bg-slate-900/90 text-white shadow">
@@ -1209,6 +1493,115 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                 Delete
               </button>
             </div>
+          </div>
+        )}
+
+        {/* RIGHT CLICK CONTEXT MENU ON CANVAS */}
+        {contextMenuPos && (
+          <div
+            className="fixed z-50 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 w-48 text-xs text-slate-200 select-none animate-in fade-in zoom-in-95 backdrop-blur-md"
+            style={{ left: contextMenuPos.x, top: contextMenuPos.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-3 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              Tool Navigasi & Link
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('pan');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-cyan-600 hover:text-white flex items-center gap-2 ${
+                activeTool === 'pan' ? 'bg-cyan-600/30 text-cyan-300 font-semibold' : ''
+              }`}
+            >
+              <MousePointer className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Pan / Drag View</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('magnifier');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-cyan-600 hover:text-white flex items-center gap-2 ${
+                activeTool === 'magnifier' ? 'bg-cyan-600/30 text-cyan-300 font-semibold' : ''
+              }`}
+            >
+              <Search className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Magnifier Glass</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('hotspot');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-amber-600 hover:text-white flex items-center gap-2 ${
+                activeTool === 'hotspot' ? 'bg-amber-600/30 text-amber-300 font-semibold' : ''
+              }`}
+            >
+              <Link className="w-3.5 h-3.5 text-amber-400" />
+              <span>Add Hotspot Link</span>
+            </button>
+
+            <div className="h-px bg-slate-800 my-1" />
+            <div className="px-3 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              Anotasi & Markup
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('pen');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-rose-600 hover:text-white flex items-center gap-2 ${
+                activeTool === 'pen' ? 'bg-rose-600/30 text-rose-300 font-semibold' : ''
+              }`}
+            >
+              <PenTool className="w-3.5 h-3.5 text-rose-400" />
+              <span>Pen Gambar (Merah)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('highlighter');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-yellow-600 hover:text-slate-950 flex items-center gap-2 ${
+                activeTool === 'highlighter' ? 'bg-yellow-500/30 text-yellow-300 font-semibold' : ''
+              }`}
+            >
+              <Highlighter className="w-3.5 h-3.5 text-yellow-400" />
+              <span>Highlighter Jalur</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('text');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-cyan-600 hover:text-white flex items-center gap-2 ${
+                activeTool === 'text' ? 'bg-cyan-600/30 text-cyan-300 font-semibold' : ''
+              }`}
+            >
+              <Type className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Catatan Teks (Text)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTool('eraser');
+                setContextMenuPos(null);
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-slate-800 hover:text-rose-400 flex items-center gap-2 text-rose-400 ${
+                activeTool === 'eraser' ? 'bg-rose-950/40 text-rose-300 font-semibold' : ''
+              }`}
+            >
+              <Eraser className="w-3.5 h-3.5" />
+              <span>Penghapus (Eraser)</span>
+            </button>
           </div>
         )}
       </div>

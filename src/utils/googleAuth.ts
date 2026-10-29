@@ -1,7 +1,8 @@
 /**
  * Google Workspace / Google Drive Authentication & Integration
  * Uses Firebase Auth for Client-Side Google Sign-In with Drive Scopes.
- * Maintains in-memory access token cache according to security guidelines.
+ * Includes graceful handling for unauthorized domains, demo drive simulation,
+ * and manual access token injection.
  */
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
@@ -13,6 +14,7 @@ import {
   signOut,
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { generateSamplePidPdf } from './sampleData';
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -23,6 +25,7 @@ provider.addScope('https://www.googleapis.com/auth/drive.readonly');
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
+let isDemoMode = false;
 
 export interface DriveFileItem {
   id: string;
@@ -32,6 +35,36 @@ export interface DriveFileItem {
   modifiedTime?: string;
   parents?: string[];
 }
+
+let demoDriveFiles: DriveFileItem[] = [
+  {
+    id: 'demo-folder-1',
+    name: 'Vopak Terminal P&ID Archive',
+    mimeType: 'application/vnd.google-apps.folder',
+    modifiedTime: new Date().toISOString(),
+  },
+  {
+    id: 'demo-doc-1',
+    name: 'PID-101-REV4-Boiler-Feedwater-Loop.pdf',
+    mimeType: 'application/pdf',
+    size: '245760',
+    modifiedTime: new Date().toISOString(),
+  },
+  {
+    id: 'demo-doc-2',
+    name: 'PID-204-REV2-Chilled-Water-Circuit.pdf',
+    mimeType: 'application/pdf',
+    size: '198400',
+    modifiedTime: new Date().toISOString(),
+  },
+  {
+    id: 'demo-backup-1',
+    name: 'PID_Studio_Backup_2026-10-28.zip',
+    mimeType: 'application/zip',
+    size: '512000',
+    modifiedTime: new Date().toISOString(),
+  },
+];
 
 /**
  * Initialize Google Auth listener
@@ -49,14 +82,16 @@ export const initGoogleAuth = (
         if (onAuthFailure) onAuthFailure();
       }
     } else {
-      cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
+      if (!isDemoMode) {
+        cachedAccessToken = null;
+      }
+      if (onAuthFailure && !isDemoMode) onAuthFailure();
     }
   });
 };
 
 /**
- * Trigger Google Sign In Popup
+ * Trigger Google Sign In Popup with graceful domain fallback
  */
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
   try {
@@ -64,18 +99,58 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error('Failed to obtain Google Drive access token.');
+      throw new Error('Gagal mendapatkan token otentikasi Google Drive.');
     }
 
     cachedAccessToken = credential.accessToken;
+    isDemoMode = false;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error('Google Sign in error:', error);
+    const errorCode = error?.code || '';
+    if (errorCode === 'auth/unauthorized-domain') {
+      console.warn(
+        `[GoogleAuth] Domain "${window.location.hostname}" belum di-whitelist di Firebase Authentication Authorized Domains.`
+      );
+    } else if (errorCode === 'auth/popup-closed-by-user') {
+      console.warn('[GoogleAuth] Jendela pop-up Google Sign-In ditutup oleh pengguna.');
+    } else {
+      console.warn('[GoogleAuth] Catatan autentikasi:', error?.message);
+    }
     throw error;
   } finally {
     isSigningIn = false;
   }
 };
+
+/**
+ * Enable interactive simulated demo drive mode
+ */
+export const enableDemoDriveMode = (): { user: any; accessToken: string } => {
+  isDemoMode = true;
+  cachedAccessToken = 'demo-drive-token-simulated';
+  return {
+    user: {
+      displayName: 'Vopak Engineering Terminal (Demo Cloud)',
+      email: 'engineering@vopak.com',
+      photoURL: null,
+    } as any,
+    accessToken: cachedAccessToken,
+  };
+};
+
+/**
+ * Injected manual access token (e.g. from developer console)
+ */
+export const setManualAccessToken = (tokenStr: string): string => {
+  cachedAccessToken = tokenStr.trim();
+  isDemoMode = false;
+  return cachedAccessToken;
+};
+
+/**
+ * Check if demo mode is active
+ */
+export const getIsDemoDriveMode = (): boolean => isDemoMode;
 
 /**
  * Retrieve cached in-memory access token
@@ -88,8 +163,11 @@ export const getAccessToken = async (): Promise<string | null> => {
  * Sign out
  */
 export const googleSignOut = async (): Promise<void> => {
-  await signOut(auth);
+  try {
+    await signOut(auth);
+  } catch {}
   cachedAccessToken = null;
+  isDemoMode = false;
 };
 
 /**
@@ -99,10 +177,17 @@ export const listGoogleDriveFiles = async (
   filterPdfsOnly = true,
   folderId?: string
 ): Promise<DriveFileItem[]> => {
-  const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated with Google Drive.');
+  if (isDemoMode) {
+    if (folderId) {
+      return demoDriveFiles.filter((f) => f.parents?.includes(folderId));
+    }
+    return demoDriveFiles.filter((f) => !f.parents || f.parents.length === 0);
+  }
 
-  let q = "trashed = false";
+  const token = await getAccessToken();
+  if (!token) throw new Error('Belum terhubung ke Google Drive.');
+
+  let q = 'trashed = false';
   if (filterPdfsOnly) {
     q += " and (mimeType = 'application/pdf' or mimeType = 'application/vnd.google-apps.folder')";
   }
@@ -124,7 +209,7 @@ export const listGoogleDriveFiles = async (
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData?.error?.message || `Failed to fetch Google Drive files (${response.status})`);
+    throw new Error(errorData?.error?.message || `Gagal mengambil daftar file Google Drive (${response.status})`);
   }
 
   const data = await response.json();
@@ -135,8 +220,13 @@ export const listGoogleDriveFiles = async (
  * Download file binary from Google Drive
  */
 export const downloadGoogleDriveFile = async (fileId: string): Promise<ArrayBuffer> => {
+  if (isDemoMode) {
+    const sampleBytes = await generateSamplePidPdf('doc-pid-101');
+    return sampleBytes.buffer.slice(sampleBytes.byteOffset, sampleBytes.byteOffset + sampleBytes.byteLength) as ArrayBuffer;
+  }
+
   const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated with Google Drive.');
+  if (!token) throw new Error('Belum terhubung ke Google Drive.');
 
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
     headers: {
@@ -145,7 +235,7 @@ export const downloadGoogleDriveFile = async (fileId: string): Promise<ArrayBuff
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to download file from Google Drive (${response.status})`);
+    throw new Error(`Gagal mengunduh file dari Google Drive (${response.status})`);
   }
 
   return await response.arrayBuffer();
@@ -160,8 +250,22 @@ export const uploadFileToGoogleDrive = async (
   fileData: ArrayBuffer | Blob,
   folderId?: string
 ): Promise<DriveFileItem> => {
+  if (isDemoMode) {
+    const sizeBytes = fileData instanceof Blob ? fileData.size : fileData.byteLength;
+    const newDemoItem: DriveFileItem = {
+      id: `demo-file-${Date.now()}`,
+      name,
+      mimeType,
+      size: String(sizeBytes || 245760),
+      modifiedTime: new Date().toISOString(),
+      parents: folderId ? [folderId] : undefined,
+    };
+    demoDriveFiles = [newDemoItem, ...demoDriveFiles];
+    return newDemoItem;
+  }
+
   const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated with Google Drive.');
+  if (!token) throw new Error('Belum terhubung ke Google Drive.');
 
   const metadata: any = {
     name,
@@ -201,7 +305,7 @@ export const uploadFileToGoogleDrive = async (
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData?.error?.message || `Failed to upload to Google Drive (${response.status})`);
+    throw new Error(errorData?.error?.message || `Gagal mengunggah ke Google Drive (${response.status})`);
   }
 
   return await response.json();
@@ -214,8 +318,20 @@ export const createGoogleDriveFolder = async (
   folderName: string,
   parentFolderId?: string
 ): Promise<DriveFileItem> => {
+  if (isDemoMode) {
+    const newFolder: DriveFileItem = {
+      id: `demo-folder-${Date.now()}`,
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      modifiedTime: new Date().toISOString(),
+      parents: parentFolderId ? [parentFolderId] : undefined,
+    };
+    demoDriveFiles = [newFolder, ...demoDriveFiles];
+    return newFolder;
+  }
+
   const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated with Google Drive.');
+  if (!token) throw new Error('Belum terhubung ke Google Drive.');
 
   const metadata: any = {
     name: folderName,
@@ -236,7 +352,7 @@ export const createGoogleDriveFolder = async (
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData?.error?.message || `Failed to create folder in Google Drive (${response.status})`);
+    throw new Error(errorData?.error?.message || `Gagal membuat folder di Google Drive (${response.status})`);
   }
 
   return await response.json();
@@ -246,8 +362,13 @@ export const createGoogleDriveFolder = async (
  * Delete a file in Google Drive
  */
 export const deleteGoogleDriveFile = async (fileId: string): Promise<void> => {
+  if (isDemoMode) {
+    demoDriveFiles = demoDriveFiles.filter((f) => f.id !== fileId);
+    return;
+  }
+
   const token = await getAccessToken();
-  if (!token) throw new Error('Not authenticated with Google Drive.');
+  if (!token) throw new Error('Belum terhubung ke Google Drive.');
 
   const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
     method: 'DELETE',
@@ -257,6 +378,6 @@ export const deleteGoogleDriveFile = async (fileId: string): Promise<void> => {
   });
 
   if (!response.ok && response.status !== 404) {
-    throw new Error(`Failed to delete Google Drive file (${response.status})`);
+    throw new Error(`Gagal menghapus file dari Google Drive (${response.status})`);
   }
 };

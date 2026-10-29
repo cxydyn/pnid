@@ -41,7 +41,8 @@ import {
   Eye,
   Sliders,
   Printer,
-  Cloud
+  Cloud,
+  Star
 } from 'lucide-react';
 
 const STORAGE_KEY_DOCS = 'pid_studio_docs_v1';
@@ -103,6 +104,62 @@ export default function App() {
   const [activeDocId, setActiveDocId] = useState<string>('doc-pid-101');
   const [activeRcaId, setActiveRcaId] = useState<string>('rca-101');
   const [activePdfBuffer, setActivePdfBuffer] = useState<ArrayBuffer | null>(null);
+
+  // Navigation History (Mundur / Maju / Jump History)
+  const [navHistory, setNavHistory] = useState<{ docId: string; pageNum: number }[]>([
+    { docId: 'doc-pid-101', pageNum: 1 },
+  ]);
+  const [navIndex, setNavIndex] = useState(0);
+
+  const pushNavHistory = (docId: string, pageNum = 1) => {
+    const current = navHistory[navIndex];
+    if (current && current.docId === docId && current.pageNum === pageNum) return;
+    const newHist = [...navHistory.slice(0, navIndex + 1), { docId, pageNum }];
+    if (newHist.length > 50) newHist.shift();
+    setNavHistory(newHist);
+    setNavIndex(newHist.length - 1);
+  };
+
+  const handleGoBack = () => {
+    if (navIndex > 0) {
+      const nextIdx = navIndex - 1;
+      setNavIndex(nextIdx);
+      const target = navHistory[nextIdx];
+      handleOpenDocument(target.docId, false);
+    }
+  };
+
+  const handleGoForward = () => {
+    if (navIndex < navHistory.length - 1) {
+      const nextIdx = navIndex + 1;
+      setNavIndex(nextIdx);
+      const target = navHistory[nextIdx];
+      handleOpenDocument(target.docId, false);
+    }
+  };
+
+  // Plotplan List & Toggle
+  const plotPlanDocs = documents.filter((d) => d.isPlotPlan);
+
+  const handleOpenPlotPlan = (docId?: string) => {
+    const targetId = docId || plotPlanDocs[0]?.id || documents[0]?.id;
+    if (targetId) {
+      handleOpenDocument(targetId);
+      showToast('info', 'Plot Plan Loaded', 'Switched to master terminal / facility plot plan.');
+    }
+  };
+
+  const handleTogglePlotPlan = (docId: string) => {
+    setDocuments((prev) =>
+      prev.map((d) => (d.id === docId ? { ...d, isPlotPlan: !d.isPlotPlan } : d))
+    );
+    const doc = documents.find((d) => d.id === docId);
+    showToast(
+      'info',
+      doc?.isPlotPlan ? 'Status Plot Plan Dihapus' : 'Ditandai Sebagai Plot Plan Utama',
+      `${doc?.title || doc?.name}`
+    );
+  };
 
   // Modals & Feedback
   const [isDataSyncOpen, setIsDataSyncOpen] = useState(false);
@@ -166,7 +223,7 @@ export default function App() {
   }, [activeDocId, activePdfBuffer]);
 
   // Open Document in Viewer
-  const handleOpenDocument = async (docId: string) => {
+  const handleOpenDocument = async (docId: string, recordHistory = true) => {
     const doc = documents.find((d) => d.id === docId);
     if (!doc) return;
 
@@ -182,6 +239,9 @@ export default function App() {
       setActiveDocId(docId);
       setActivePdfBuffer(buffer.slice(0));
       setCurrentView('viewer');
+      if (recordHistory) {
+        pushNavHistory(docId, 1);
+      }
     } else {
       showToast('error', 'Document Unavailable', 'Binary data could not be located in storage.');
     }
@@ -388,15 +448,28 @@ export default function App() {
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
       {/* GLOBAL TOP NAVIGATION BAR (Zone 1: Brand wordmark, Zone 2: Navigation Links, Zone 3: Primary Action) */}
       <header className="h-14 shrink-0 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-6 flex items-center justify-between gap-8 z-40 no-print">
-        {/* Zone 1: Single text element wordmark */}
-        <div
-          onClick={() => setCurrentView('explorer')}
-          className="text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 flex items-center gap-2.5 cursor-pointer"
-        >
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-cyan-600 to-blue-500 flex items-center justify-center text-white shadow-md">
-            <Layers className="w-4 h-4" />
+        {/* Zone 1: Single text element wordmark + Plotplan Fast-Switch */}
+        <div className="flex items-center gap-4 shrink-0">
+          <div
+            onClick={() => setCurrentView('explorer')}
+            className="text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 flex items-center gap-2.5 cursor-pointer"
+          >
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-cyan-600 to-blue-500 flex items-center justify-center text-white shadow-md">
+              <Layers className="w-4 h-4" />
+            </div>
+            <span>Apex P&ID & RCA Studio</span>
           </div>
-          <span>Apex P&ID & RCA Studio</span>
+
+          {plotPlanDocs.length > 0 && (
+            <button
+              onClick={() => handleOpenPlotPlan()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:text-white bg-amber-950/70 hover:bg-amber-900 border border-amber-600/70 rounded-lg transition-all shadow-sm"
+              title="Buka Plotplan Fasilitas / Terminal Utama"
+            >
+              <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+              <span>Plotplan ({plotPlanDocs.length})</span>
+            </button>
+          )}
         </div>
 
         {/* Zone 2: Concise single-line navigation links */}
@@ -488,6 +561,7 @@ export default function App() {
             onDeleteDocument={handleDeleteDocument}
             onMoveDocument={handleMoveDocument}
             onDownloadDocument={handleDownloadDocument}
+            onTogglePlotPlan={handleTogglePlotPlan}
             onOpenDataSync={() => setIsDataSyncOpen(true)}
             onOpenGoogleDrive={() => setIsGoogleDriveOpen(true)}
           />
@@ -507,6 +581,11 @@ export default function App() {
             onSaveAnnotations={setAnnotations}
             onUpdatePdfData={handleUpdatePdfData}
             onShowToast={showToast}
+            onDownloadPdf={() => handleDownloadDocument(activeDocId)}
+            canGoBack={navIndex > 0}
+            canGoForward={navIndex < navHistory.length - 1}
+            onGoBack={handleGoBack}
+            onGoForward={handleGoForward}
           />
         )}
 

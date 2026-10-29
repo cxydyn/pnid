@@ -25,6 +25,7 @@ export const INITIAL_DOCUMENTS: DocumentItem[] = [
     equipmentTag: 'BFW-SYS-01',
     systemUnit: 'Unit 1 Power Block',
     isSample: true,
+    isPlotPlan: true,
   },
   {
     id: 'doc-pid-204',
