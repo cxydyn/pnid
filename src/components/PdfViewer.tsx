@@ -53,6 +53,8 @@ interface PdfViewerProps {
   hotspots: Hotspot[];
   annotations: Annotation[];
   allDocuments: DocumentItem[];
+  initialPageNum?: number;
+  onPageChange?: (pageNum: number) => void;
   onBackToExplorer: () => void;
   onOpenRca: (rcaId: string, equipmentTag?: string, equipmentName?: string) => void;
   onNavigateToDocument: (targetDocId: string, targetPageNum?: number) => void;
@@ -75,6 +77,8 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   hotspots,
   annotations,
   allDocuments,
+  initialPageNum = 1,
+  onPageChange,
   onBackToExplorer,
   onOpenRca,
   onNavigateToDocument,
@@ -89,11 +93,24 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   onGoForward,
 }) => {
   // Navigation & Viewport State
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialPageNum || 1);
   const [totalPages, setTotalPages] = useState(documentItem.pageCount || 1);
   const [scale, setScale] = useState(1.1);
   const [rotation, setRotation] = useState(0); // 0, 90, 180, 270
   const [activeTool, setActiveTool] = useState<ToolMode>('pan');
+  const [showDeletePageConfirm, setShowDeletePageConfirm] = useState(false);
+
+  const changePage = (newPage: number) => {
+    const valid = Math.max(1, Math.min(newPage, totalPages));
+    setCurrentPage(valid);
+    onPageChange?.(valid);
+  };
+
+  useEffect(() => {
+    if (initialPageNum && initialPageNum !== currentPage) {
+      setCurrentPage(initialPageNum);
+    }
+  }, [initialPageNum]);
 
   // Pan offsets
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -159,9 +176,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
 
   // Reset page and pan when switching documents
   useEffect(() => {
-    setCurrentPage(1);
+    setCurrentPage(initialPageNum || 1);
     setPanOffset({ x: 0, y: 0 });
-  }, [documentItem.id]);
+  }, [documentItem.id, initialPageNum]);
 
   // Load PDF Document
   useEffect(() => {
@@ -331,9 +348,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-        if (currentPage < totalPages) setCurrentPage((p) => p + 1);
+        if (currentPage < totalPages) changePage(currentPage + 1);
       } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-        if (currentPage > 1) setCurrentPage((p) => p - 1);
+        if (currentPage > 1) changePage(currentPage - 1);
       } else if (e.key === '+' || e.key === '=') {
         handleZoomIn();
       } else if (e.key === '-') {
@@ -787,6 +804,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
 
   // PDF Page Management using pdf-lib: Delete current page
   const handleDeletePage = async () => {
+    setShowDeletePageConfirm(false);
     if (!pdfData || totalPages <= 1) {
       onShowToast('warning', 'Cannot Delete Page', 'A document must have at least one page remaining.');
       return;
@@ -1004,7 +1022,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           {/* Page Stepper & Insertion */}
           <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5">
             <button
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              onClick={() => changePage(currentPage - 1)}
               disabled={currentPage <= 1}
               className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 rounded"
               title="Previous Page"
@@ -1015,7 +1033,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
               {currentPage} / {totalPages}
             </span>
             <button
-              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() => changePage(currentPage + 1)}
               disabled={currentPage >= totalPages}
               className="p-1 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 rounded"
               title="Next Page"
@@ -1089,7 +1107,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
             )}
 
             <button
-              onClick={handleDeletePage}
+              onClick={() => setShowDeletePageConfirm(true)}
               className="p-1.5 text-slate-400 hover:text-rose-400 bg-slate-800/80 rounded-lg transition-colors"
               title="Hapus Halaman Ini (Delete Page)"
             >
@@ -1736,29 +1754,112 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
               {editingHotspot.actionType === 'dropdown' && (
                 <div>
                   <label className="block text-slate-400 mb-1">Dropdown Link Items</label>
-                  <div className="space-y-2 mb-2">
+                  <div className="space-y-3 mb-3 max-h-60 overflow-y-auto pr-1">
                     {(editingHotspot.dropdownOptions || []).map((opt, idx) => (
-                      <div key={opt.id} className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={opt.label}
-                          onChange={(e) => {
-                            const opts = [...(editingHotspot.dropdownOptions || [])];
-                            opts[idx].label = e.target.value;
-                            setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
-                          }}
-                          className="flex-1 px-2.5 py-1 bg-slate-950 border border-slate-800 rounded text-xs text-white"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const opts = (editingHotspot.dropdownOptions || []).filter((_, i) => i !== idx);
-                            setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
-                          }}
-                          className="text-slate-500 hover:text-rose-400"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                      <div key={opt.id} className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg space-y-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={opt.label}
+                            onChange={(e) => {
+                              const opts = [...(editingHotspot.dropdownOptions || [])];
+                              opts[idx].label = e.target.value;
+                              setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                            }}
+                            placeholder="Option Label (e.g. Pump Datasheet)"
+                            className="flex-1 px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-white"
+                          />
+                          <select
+                            value={opt.actionType || 'note'}
+                            onChange={(e) => {
+                              const opts = [...(editingHotspot.dropdownOptions || [])];
+                              opts[idx].actionType = e.target.value as 'note' | 'doc' | 'url';
+                              if (opts[idx].actionType === 'doc' && !opts[idx].targetDocId) {
+                                opts[idx].targetDocId = allDocuments[0]?.id;
+                                opts[idx].targetPageNum = 1;
+                              }
+                              setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                            }}
+                            className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-cyan-300 font-medium"
+                          >
+                            <option value="note">Pop-up Note</option>
+                            <option value="doc">Jump to P&ID</option>
+                            <option value="url">External Link</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const opts = (editingHotspot.dropdownOptions || []).filter((_, i) => i !== idx);
+                              setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                            }}
+                            className="text-slate-500 hover:text-rose-400 p-1"
+                            title="Delete Item"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        {/* Action Details */}
+                        {opt.actionType === 'doc' && (
+                          <div className="flex items-center gap-2 pt-1 border-t border-slate-900">
+                            <select
+                              value={opt.targetDocId || allDocuments[0]?.id}
+                              onChange={(e) => {
+                                const opts = [...(editingHotspot.dropdownOptions || [])];
+                                opts[idx].targetDocId = e.target.value;
+                                setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                              }}
+                              className="flex-1 px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-white"
+                            >
+                              {allDocuments.map((d) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.title || d.name}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="number"
+                              min={1}
+                              value={opt.targetPageNum || 1}
+                              onChange={(e) => {
+                                const opts = [...(editingHotspot.dropdownOptions || [])];
+                                opts[idx].targetPageNum = parseInt(e.target.value) || 1;
+                                setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                              }}
+                              placeholder="Page"
+                              className="w-16 px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-white font-mono text-center"
+                              title="Page Number"
+                            />
+                          </div>
+                        )}
+
+                        {opt.actionType === 'note' && (
+                          <textarea
+                            rows={2}
+                            value={opt.note || ''}
+                            onChange={(e) => {
+                              const opts = [...(editingHotspot.dropdownOptions || [])];
+                              opts[idx].note = e.target.value;
+                              setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                            }}
+                            placeholder="Note description, equipment spec, or calibration data..."
+                            className="w-full px-2 py-1 bg-slate-900 border border-slate-800 rounded text-[11px] text-white font-mono"
+                          />
+                        )}
+
+                        {opt.actionType === 'url' && (
+                          <input
+                            type="text"
+                            value={opt.url || ''}
+                            onChange={(e) => {
+                              const opts = [...(editingHotspot.dropdownOptions || [])];
+                              opts[idx].url = e.target.value;
+                              setEditingHotspot({ ...editingHotspot, dropdownOptions: opts });
+                            }}
+                            placeholder="https://..."
+                            className="w-full px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-white font-mono"
+                          />
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1779,9 +1880,10 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                         ],
                       });
                     }}
-                    className="text-cyan-400 hover:text-cyan-300 font-medium text-xs"
+                    className="text-cyan-400 hover:text-cyan-300 font-medium text-xs flex items-center gap-1"
                   >
-                    + Add Dropdown Item
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Dropdown Item</span>
                   </button>
                 </div>
               )}
@@ -1812,6 +1914,39 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                   Save Hotspot
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE PAGE CONFIRMATION MODAL */}
+      {showDeletePageConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-sm w-full p-5 shadow-2xl animate-in fade-in zoom-in-95">
+            <div className="flex items-center gap-3 text-rose-400 mb-3">
+              <div className="p-2 bg-rose-950/80 border border-rose-800 rounded-lg">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <h3 className="text-sm font-bold text-white">Hapus Halaman Ini?</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed mb-5">
+              Apakah Anda yakin ingin menghapus <strong className="text-white">Halaman {currentPage}</strong> dari dokumen ini? Perubahan akan disimpan langsung ke file PDF.
+            </p>
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowDeletePageConfirm(false)}
+                className="px-3.5 py-1.5 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleDeletePage}
+                className="px-4 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 rounded-lg shadow-sm transition-colors"
+              >
+                Hapus Halaman
+              </button>
             </div>
           </div>
         </div>

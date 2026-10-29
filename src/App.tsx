@@ -104,6 +104,7 @@ export default function App() {
   const [activeDocId, setActiveDocId] = useState<string>('doc-pid-101');
   const [activeRcaId, setActiveRcaId] = useState<string>('rca-101');
   const [activePdfBuffer, setActivePdfBuffer] = useState<ArrayBuffer | null>(null);
+  const [activePageNum, setActivePageNum] = useState<number>(1);
 
   // Navigation History (Mundur / Maju / Jump History)
   const [navHistory, setNavHistory] = useState<{ docId: string; pageNum: number }[]>([
@@ -125,7 +126,8 @@ export default function App() {
       const nextIdx = navIndex - 1;
       setNavIndex(nextIdx);
       const target = navHistory[nextIdx];
-      handleOpenDocument(target.docId, false);
+      setActivePageNum(target.pageNum);
+      handleOpenDocument(target.docId, false, target.pageNum);
     }
   };
 
@@ -134,8 +136,20 @@ export default function App() {
       const nextIdx = navIndex + 1;
       setNavIndex(nextIdx);
       const target = navHistory[nextIdx];
-      handleOpenDocument(target.docId, false);
+      setActivePageNum(target.pageNum);
+      handleOpenDocument(target.docId, false, target.pageNum);
     }
+  };
+
+  const handlePageChange = (newPageNum: number) => {
+    setActivePageNum(newPageNum);
+    setNavHistory((prev) => {
+      const updated = [...prev];
+      if (updated[navIndex]) {
+        updated[navIndex] = { ...updated[navIndex], pageNum: newPageNum };
+      }
+      return updated;
+    });
   };
 
   // Plotplan List & Toggle
@@ -223,7 +237,7 @@ export default function App() {
   }, [activeDocId, activePdfBuffer]);
 
   // Open Document in Viewer
-  const handleOpenDocument = async (docId: string, recordHistory = true) => {
+  const handleOpenDocument = async (docId: string, recordHistory = true, targetPageNum = 1) => {
     const doc = documents.find((d) => d.id === docId);
     if (!doc) return;
 
@@ -237,10 +251,11 @@ export default function App() {
 
     if (buffer && buffer.byteLength > 0) {
       setActiveDocId(docId);
+      setActivePageNum(targetPageNum);
       setActivePdfBuffer(buffer.slice(0));
       setCurrentView('viewer');
       if (recordHistory) {
-        pushNavHistory(docId, 1);
+        pushNavHistory(docId, targetPageNum);
       }
     } else {
       showToast('error', 'Document Unavailable', 'Binary data could not be located in storage.');
@@ -416,8 +431,10 @@ export default function App() {
     }
     if (buffer) {
       setActiveDocId(targetDocId);
-      setActivePdfBuffer(buffer);
+      setActivePageNum(targetPageNum);
+      setActivePdfBuffer(buffer.slice(0));
       setCurrentView('viewer');
+      pushNavHistory(targetDocId, targetPageNum);
       showToast('info', 'Document Switched', `Loaded ${doc.title || doc.name}`);
     }
   };
@@ -574,6 +591,8 @@ export default function App() {
             hotspots={hotspots}
             annotations={annotations}
             allDocuments={documents}
+            initialPageNum={activePageNum}
+            onPageChange={handlePageChange}
             onBackToExplorer={() => setCurrentView('explorer')}
             onOpenRca={handleOpenRca}
             onNavigateToDocument={handleNavigateToDocument}

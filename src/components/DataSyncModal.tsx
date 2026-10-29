@@ -198,7 +198,7 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
       const pdfsFolder = zip.folder('pdf_documents');
       if (pdfsFolder) {
         for (const doc of config.documents || []) {
-          const fileInZip = pdfsFolder.file(doc.name);
+          const fileInZip = pdfsFolder.file(doc.name) || pdfsFolder.file(`${doc.id}.pdf`);
           if (fileInZip) {
             const buffer = await fileInZip.async('arraybuffer');
             await saveDocumentBinary(doc.id, buffer);
@@ -365,7 +365,10 @@ export const DataSyncModal: React.FC<DataSyncModalProps> = ({
             <div>Hotspots: {window.STANDALONE_PROJECT_DATA.hotspots.length}</div>
             <div>RCA Investigations: {window.STANDALONE_PROJECT_DATA.rcaInvestigations.length}</div>
           </div>
-          <button onClick={() => alert("All components ready for field inspection.")} className="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded-lg shadow">
+          <div id="status-box" className="hidden p-3 mb-4 bg-emerald-950/80 border border-emerald-600 rounded-lg text-emerald-300 text-xs font-medium">
+            All offline components, hotspots, and RCA trees verified and ready for field inspection.
+          </div>
+          <button onClick={() => { const el = document.getElementById('status-box'); if(el) el.classList.remove('hidden'); }} className="px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold rounded-lg shadow">
             Launch Standalone Workspace
           </button>
         </div>
